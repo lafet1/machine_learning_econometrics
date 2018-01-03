@@ -1,0 +1,159 @@
+---
+title: "Machine Learning - Individual Assignment 2"
+author: "Stepan Svoboda"
+date: "5 December 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+
+Necessary libraries are loaded and seed set.
+
+```{r message=FALSE, warning=FALSE}
+library(kernlab)
+
+# Load other libraries
+library(data.table)
+library(ggplot2)
+library(text2vec)
+library(stringr)
+library(tokenizers)
+
+set.seed(150)
+
+```
+
+Now the data are loaded and grouped into one data frame.
+
+```{r}
+# loading data
+amazon_sentences <- fread("sentiment labelled sentences/amazon_cells_labelled.txt", 
+                          header = FALSE, sep = "\t")
+yelp_sentences <- fread("sentiment labelled sentences/yelp_labelled.txt", 
+                          header = FALSE, sep = "\t")
+imdb_sentences <- fread("sentiment labelled sentences/imdb_labelled.txt", 
+                          header = FALSE, sep = "\t")
+
+colnames(amazon_sentences) <- c("text", "sentiment")
+colnames(yelp_sentences) <- c("text", "sentiment")
+colnames(imdb_sentences) <- c("text", "sentiment")
+
+d <- rbind(amazon_sentences, imdb_sentences, yelp_sentences)
+d$id <- rownames(d)
+
+```
+
+DTM is created. The vocabulary pruning chosen is arbitrary and aimed at getting rid of words that are either too rare or too common, i.e. words not very useful in classification. Also the tf-idf transformation is applied.
+
+```{r message=FALSE, warning=FALSE}
+# dtm
+prep_fun <- function(x) {
+  x <- tolower(x)
+  x <- str_replace_all(x, '[:digit:]', ' ') # replacing digits with space
+  x <- str_replace_all(x, '\\b\\w{1,2}\\b',' ') # replacing one and two letter words with space
+  x <- str_replace_all(x, '[:punct:]', ' ') # removing punctuation
+  x <- str_replace_all(x, '\\s+', ' ') # replacing whitespace with space
+}
+tok_fun <- function(x){tokenize_words(x, stopwords = stopwords())} # removing stopwords
+
+
+it_train <- itoken(d$text, 
+                   preprocessor = prep_fun, 
+                   tokenizer = tok_fun, 
+                   ids = d$id, 
+                   progressbar = TRUE)
+vocab <- create_vocabulary(it_train)
+pruned_vocab <- prune_vocabulary(vocab, 
+                                 term_count_min = 3, 
+                                 doc_proportion_max = 0.4,
+                                 doc_proportion_min = 0.0001)
+vectorizer <- vocab_vectorizer(pruned_vocab)
+
+dtm_train <- create_dtm(it_train, vectorizer)
+
+tfidf <- TfIdf$new()
+dtm_tfidf <- fit_transform(dtm_train, tfidf)
+
+# training/testing data
+dtm_tfidf <- as.matrix(dtm_tfidf)
+```
+
+The data are split into train and test sample.
+
+```{r}
+# training/testing data
+dtm_tfidf <- as.matrix(dtm_tfidf)
+
+data <- as.data.frame(cbind(as.factor(d$sentiment), dtm_tfidf))
+names(data)[1] <- "sentiment"
+names(data) <- make.names(names(data))
+rnd <- runif(3000)
+data$sentiment <- as.factor(data$sentiment)
+
+d_train <- data[rnd < 0.8, ]
+d_test <- data[rnd >= 0.8, ]
+
+keep <- names(which(colSums(d_train[, -1]) != 0))
+d_train <- d_train[, c("sentiment", keep)]
+d_test <- d_test[, c("sentiment", keep)]
+```
+
+# Classifier
+
+Several classifiers are tried. The *cost* hyperparameter is looked upon and combined with $\sigma = 0.05$ in case of *radial basis kernel* and the *second degree polynomial kernel* with offset parameter 1. The linear kernel has only the cost parameter. The code from the Lab session is mainly reused and slightly altered to carry out the desired task.
+
+As is written in the instructions the other hyperparameters of the kernel functions are not tried. Only the *optimal combination of the cost of misclassification and kernel function* is looked at. If we were to investigate other kernels more deeply ideal solution would probably be either the *mlr* or *caret* library and their built-in optimization tools. In case of *mlr* library this function is called *tuneParams*. We can implement quite easily a search over a pre-specified set of parameters. Here only a straightforward function is used.
+
+```{r, eval=F}
+kernels <- list(rbfdot(sigma = 0.05),
+                    polydot(scale = 1, offset = 1, degree = 2),
+                    vanilladot())
+
+pred_accuracy <- function(miscost, type) {
+  mod <- ksvm(sentiment ~ .,
+              data = d_train,
+              kernel = type,
+              C = miscost,
+              cross = 10)
+  
+  acc <- sum(d_test$sentiment == 
+               predict(mod, d_test %>% select(-sentiment))) / dim(d_test)[1] * 100
+  print(miscost)
+  return(acc)
+  
+}
+
+mis_cost <- 10^seq(-2, 2, by = 0.1)
+costs <- mis_cost
+
+result <- cbind(costs, sapply(mis_cost, pred_accu, type = kernels[[3]])) # linear
+result1 <- cbind(costs, sapply(mis_cost, pred_accu, type = kernels[[1]])) # rbf
+result2 <- cbind(costs, sapply(mis_cost, pred_accu, type = kernels[[2]])) #poly
+
+
+results <- as.data.frame(cbind(result, result1[, 2], result2[, 2]))
+colnames(results) <- c('Cost', 'Linear', 'Radial basis', 'Polynomial')
+```
+
+
+```{r include=FALSE}
+results <- read.csv("results.csv")
+
+# i calculated the previous chunk in R and then saved he result, so that knitting the markdown is quick. it can be easily calculated inside the markdown or by removing eval=F from the previous chunk 
+```
+
+The results quite clearly show that the specified polynomial kernel has the same performance over all cost parameters that were chosen. The radial basis kernel has the worst perfomance possibly due to low/high $\sigma$, this again can be rectified by using library such as *mlr* or *caret*. The linear kernel has the best results, especially with the lowest cost, higher costs seem to worsen its performance significantly.
+
+```{r}
+result_ggplot <- melt(results, id.vars = 'Cost')
+
+ggplot(result_ggplot) +
+  geom_line(aes(x = Cost, y = value, col = variable), size = 1) + scale_x_log10() + labs(caption = "X axis is scaled with log10")
+
+```
+
+To achieve greater accuracy several things could be tried -- greater range of cost hyperparamater, different $\sigma$ in case of rbf kernel and different offset and polynomial degree in case of the polynomial kernel. This would be ideally implemented using an already existing R function to minimize the amount of possible mistakes one can make and have the most efficient code (https://mlr-org.github.io/mlr-tutorial/devel/html/). As this was not the aim of the assignment I have implemented my own code and used it to find the best classifier in a smaller parameter space.

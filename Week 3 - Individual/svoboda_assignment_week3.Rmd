@@ -1,0 +1,496 @@
+---
+title: "Machine Learning - Individual Assignment 1"
+author: "Stepan Svoboda"
+date: "27 November 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### NB
+
+Only ggplot code is hidden in the knitted document.
+
+# Setup
+First we run the given code, load ggplot and set a seed so the results are recreatable.
+
+```{r given setup, message=FALSE, warning=FALSE}
+library(ggplot2)
+
+```
+
+```{r}
+set.seed(150)
+
+my_func <- function(n){
+  x <- runif(n, min = - 1, max = 1)
+  noise <- rnorm(n, mean = 0, sd = 0.1)
+  target <- sin(2 * pi * x) + noise
+  return(data.frame(x, target))
+}
+
+##### Generate data and iteration steps #####
+my_values <- my_func(100)
+target <- my_values$target
+x <- my_values$x
+
+my_values_test <- my_func(100)
+target_test <- my_values_test$target
+x_test <- my_values_test$x
+
+```
+
+Secondly we take a look at the data.
+
+```{r echo = FALSE}
+ggplot(data = my_values, aes(x = x, y = target)) + geom_jitter() + 
+  theme_minimal() + labs(title = "Train data", caption = "Target variable plotted against the single feature") + theme(plot.caption = element_text(hjust = 0.5))
+
+ggplot(data = my_values_test, aes(x = x, y = target)) + geom_jitter() +
+  theme_minimal() + 
+  labs(title = "Test data", caption = "Target variable plotted against the single feature") + theme(plot.caption = element_text(hjust = 0.5))
+
+```
+
+Every model is trained first on the training data (or its subset) and then its performance is tested using the testing data.
+
+# Exercise 1
+
+_Transform the $x$ by using 9 Gaussian basis functions. Fix the parameters of your gaussian functions. Take note of the domain of the function when you select the parameter governing the spatial scale (i.e. $s$). Share your code and graph the results. You need to use your result in the succeeding questions. (1 point)_
+
+## Gaussian transformation
+Our first task is to create 9 new features using Gaussian basis transformation with fixed parameters. We also plot the results so that we have a visual confirmation of our results.
+
+```{r}
+mean <- seq(- 1, 1, by = 0.25)
+sd <- 0.15
+gaus_basis <- function(mean, sd, x){
+  new_features <- as.data.frame(x)
+  
+  for (i in 1:length(mean)){
+    new_features[, i] <- exp( - (x - mean[i])^2 / (2 * sd^2)) # dnorm(x, mean[i], sd)
+  }
+  names(new_features) <- c('x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9')
+  return(new_features)
+}
+
+# training data set with the transformed features
+features1 <- gaus_basis(mean, sd, x)
+df1 <- cbind(my_values, features1)
+df <- cbind(rep(1, 100), unname(as.matrix(df1[, - c(1:2)]))) # include intercept
+
+# testing data set with the transformed features
+features1_test <- gaus_basis(mean, sd, x_test)
+df1_test <- cbind(my_values_test, features1_test)
+df_test <- cbind(rep(1, 100), unname(as.matrix(df1_test[, - c(1:2)]))) # include intercept
+```
+
+```{r echo = FALSE}
+ggplot(data = df1) +
+  geom_jitter(aes(x = x, y = target)) +
+  geom_line(aes(x = x, y = x1), color = "red") + 
+  geom_line(aes(x = x, y = x2), color = "indianred") +
+  geom_line(aes(x = x, y = x3), color = "blue") +
+  geom_line(aes(x = x, y = x4), color = "yellow") +
+  geom_line(aes(x = x, y = x5), color = "green") +
+  geom_line(aes(x = x, y = x6), color = "orange") +
+  geom_line(aes(x = x, y = x7), color = "navyblue") +
+  geom_line(aes(x = x, y = x8), color = "brown") +
+  geom_line(aes(x = x, y = x9), color = "grey") +
+  theme_minimal() +
+  labs(caption = "9 different Gaussian transformations of our original feature with different means and same variance", title = "Gaussian features - train data") + theme(plot.caption = element_text(hjust = 0.5))
+
+ggplot(data = df1_test) +
+  geom_jitter(aes(x = x, y = target)) +
+  geom_line(aes(x = x, y = x1), color = "red") + 
+  geom_line(aes(x = x, y = x2), color = "indianred") +
+  geom_line(aes(x = x, y = x3), color = "blue") +
+  geom_line(aes(x = x, y = x4), color = "yellow") +
+  geom_line(aes(x = x, y = x5), color = "green") +
+  geom_line(aes(x = x, y = x6), color = "orange") +
+  geom_line(aes(x = x, y = x7), color = "navyblue") +
+  geom_line(aes(x = x, y = x8), color = "brown") +
+  geom_line(aes(x = x, y = x9), color = "grey") +
+  theme_minimal() +
+  labs(caption = "9 different Gaussian transformations of our original feature with different means and same variance", title = "Gaussian features - test data") + theme(plot.caption = element_text(hjust = 0.5))
+
+```
+
+I have chosen the standard deviation equal to $0.15$, which means our variance is $0.0225$. This was an arbitrary choice. I tried several values and then settled on this one. Other choices are not shown here but they can be simply recreated by changing the value of the variable $sd$.
+
+The chosen value of the variance fits quite well our data and the final Gaussian transformation is satisfactory.
+
+# Exercise 2
+
+_Estimate the parameters using regularized least squares for sample sizes: 20,40,…,100. provide an overview table with point estimates for the parameters. (2 points)_
+
+## Ridge regression
+We start by getting the optimal value of lambda using the glmnet library and then we estimate the regularized least squares from scratch. We estimate the optimal lambda in each case for our estimates to be comparable to the BLR in Exercise 5 as there we find the optimal $\alpha$ and $\beta$ from our data, similar to the glmnet function finding the optimal $\lambda$ (regularization parameter) based on the data at hand. We have not done an exhaustive search and the found parameter is only approximate. The ideal solution here to finding the optimal value of lambda would be either a grid search around the found value of $\lambda$ or a more detailed sequence followed by a grid search.
+
+```{r, message=FALSE, warning=FALSE}
+require(glmnet) # we use this library to determine the optimal lambda
+
+lambdas <- 10^seq(2, -2, by = -0.1)
+ridge1 <- glmnet(df[1:20, ], as.numeric(df1[1:20, 2]), 
+                   alpha = 0, lambda = lambdas)
+opt_lambda1 <- ridge1[[5]][length(ridge1[[5]])] # 20 observations is too little for  cross-validation thus the optimal lambda is chosen manually (looking which lambda gave the lowest variance)
+
+cv.ridge2 <- cv.glmnet(df[1:40, ], as.numeric(df1[1:40, 2]), 
+                       alpha = 0, lambda = lambdas)
+opt_lambda2 <- cv.ridge2$lambda.min
+
+cv.ridge3 <- cv.glmnet(df[1:60, ], as.numeric(df1[1:60, 2]), 
+                       alpha = 0, lambda = lambdas)
+opt_lambda3 <- cv.ridge3$lambda.min
+
+cv.ridge4 <- cv.glmnet(df[1:80, ], as.numeric(df1[1:80, 2]), 
+                       alpha = 0, lambda = lambdas)
+opt_lambda4 <- cv.ridge4$lambda.min
+
+cv.ridge5 <- cv.glmnet(df, as.numeric(df1[, 2]), 
+                       alpha = 0, lambda = lambdas)
+opt_lambda5 <- cv.ridge5$lambda.min
+
+```
+
+Now we define the function to estimate the ridge regression and save its predictions and coefficients.
+
+```{r, message=FALSE, warning=FALSE}
+ridge <- function(mydata, lambda){
+  mydata <- cbind(intercept = rep(1, nrow(mydata)), mydata)
+  train_data <- unname(as.matrix(mydata[, - c(2:3)])) 
+  w_ols_reg <- solve(lambda * diag(10) + t(train_data) %*% train_data) %*% 
+                  t(train_data) %*% mydata[, 3]
+  w_ols_reg <- as.data.frame(w_ols_reg, row.names = c(paste("w", 0:9, sep = '_')))
+  names(w_ols_reg) <- c("estimate")
+  return(w_ols_reg)
+  # return(vector(w_0 = w_ols_reg[1, 1], w_1 = w_ols_reg[2, 1], w_3 = w_ols_reg[3, 1],
+  #             w_4 = w_ols_reg[4, 1], w_5 = w_ols_reg[5, 1], w_6 = w_ols_reg[6, 1],
+  #             w_7 = w_ols_reg[7, 1], w_8 = w_ols_reg[8, 1], w_9 = w_ols_reg[9, 1]))
+  # option in case we wanted a named vector
+}
+
+rls1 <- ridge(df1[1:20, ], opt_lambda1)
+fitted_rls1 <- df_test %*% as.matrix(rls1)
+rls2 <- ridge(df1[1:40, ], opt_lambda2)
+fitted_rls2 <- df_test %*% as.matrix(rls2)
+rls3 <- ridge(df1[1:60, ], opt_lambda3)
+fitted_rls3 <- df_test %*% as.matrix(rls3)
+rls4 <- ridge(df1[1:80, ], opt_lambda4)
+fitted_rls4 <- df_test %*% as.matrix(rls4)
+rls5 <- ridge(df1, opt_lambda5)
+fitted_rls5 <- df_test %*% as.matrix(rls5)
+
+fitted_rls <- cbind(fitted_rls1, fitted_rls2, fitted_rls3,
+                      fitted_rls4, fitted_rls5)
+```
+
+We look at the resulting coefficients.
+
+```{r}
+ridge_coef <- cbind(rls1, rls2, rls3, rls4, rls5)
+names(ridge_coef) <- c("20 obs", "40 obs", "60 obs", "80 obs", "100 obs")
+print(ridge_coef)
+
+```
+
+Now we plot the results of our regressions trained on 20/40/60/80/100 observations.
+
+```{r echo = FALSE}
+ggplot(data = df1_test) +
+  geom_jitter(aes(x = x, y = target)) +
+  geom_line(aes(x = x, 
+                y = fitted_rls1), color = "red") +
+  geom_line(aes(x = x, 
+                  y = fitted_rls2), color = "blue") +
+  geom_line(aes(x = x, 
+                  y = fitted_rls3), color = "navyblue") +
+  geom_line(aes(x = x, 
+                  y = fitted_rls4), color = "green") + 
+  geom_line(aes(x = x, 
+                  y = fitted_rls5), color = "orange") +
+  theme_minimal() + labs(title = "Ridge regression", caption = "Fitted values of our Ridge regression models trained on 5 different subsets observations") + theme(plot.caption = element_text(hjust = 0.5))
+
+```
+
+# Exercise 3
+
+_Estimate the parameters using bayesian linear regression assuming that the parameters have multivariate normal prior: 20, 40,…,100. Here, you can preselect the $\beta$ and $\alpha$. Provide an overview table with point estimates for the parameters. (2 points)_
+
+## Bayesian regression
+The function to estimate the Bayesian regression is defined and all the fitted values alongside the coefficients are extracted.
+
+```{r, message=FALSE, warning=FALSE}
+bayes_solution <- function(mydata, alpha, beta){
+  mydata <- unname(as.matrix(cbind(intercept = rep(1, nrow(mydata)), mydata[, -1])))
+  alphaI <- alpha * diag(10)
+  S <- solve(alphaI + beta * t(mydata[, -2]) %*% mydata[, -2])
+  m <- as.vector(beta * S %*%  t(mydata[, -2]) %*% mydata[, 2])
+  
+  m <- as.data.frame(m, row.names = c(paste("w", 0:9, sep = '_')))
+  names(m) <- c("estimate")
+  return(m)
+}
+
+# we arbitrarily chose as prior alpha = 0 and beta equal 20, we can see the results are quite good
+bayes1 <- bayes_solution(df1[1:20, ], 0, 20)
+fitted_bayes1 <- df_test %*% as.matrix(bayes1)
+bayes2 <- bayes_solution(df1[1:40, ], 0, 20)
+fitted_bayes2 <- df_test %*% as.matrix(bayes2)
+bayes3 <- bayes_solution(df1[1:60, ], 0, 20)
+fitted_bayes3 <- df_test %*% as.matrix(bayes3)
+bayes4 <- bayes_solution(df1[1:80, ], 0, 20)
+fitted_bayes4 <- df_test %*% as.matrix(bayes4)
+bayes5 <- bayes_solution(df1, 0, 20)
+fitted_bayes5 <- df_test %*% as.matrix(bayes5)
+
+fitted_bayes <- cbind(fitted_bayes1, fitted_bayes2, fitted_bayes3,
+                      fitted_bayes4, fitted_bayes5)
+```
+
+Now we take a look at the coefficients.
+
+```{r}
+bayes_coef <- cbind(bayes1, bayes2, bayes3, bayes4, bayes5)
+names(bayes_coef) <- c("20 obs", "40 obs", "60 obs", "80 obs", "100 obs")
+print(bayes_coef)
+
+```
+
+And lastly we look at the final graph of our models.
+
+```{r echo = FALSE}
+ggplot(data = df1_test) +
+  geom_jitter(aes(x = x, y = target)) +
+  geom_line(aes(x = x, 
+                y = fitted_bayes1), color = "red") +
+  geom_line(aes(x = x, 
+                y = fitted_bayes2), color = "blue") +
+  geom_line(aes(x = x, 
+                y = fitted_bayes3), color = "navyblue") +
+  geom_line(aes(x = x, 
+                y = fitted_bayes4), color = "green") + 
+  geom_line(aes(x = x, 
+                y = fitted_bayes5), color = "orange") +
+  theme_minimal() + labs(title = "Bayesian regression", caption = "Fitted values of our Bayesian regression models trained on 5 different subsets observations") + theme(plot.caption = element_text(hjust = 0.5))
+
+```
+
+# Exercise 4
+
+_Discuss how the parameter estimates for the two methods compare, you can use tables and graphs to support your claims. (2 points)_
+
+## Comparison
+We start off the comparison by looking at the Ridge and Bayesian regression fitted values for the smallest and largest sample.
+
+```{r echo = FALSE}
+ggplot(data = df1_test) +
+  geom_jitter(aes(x = x, y = target)) +
+  geom_line(aes(x = x, 
+                y = fitted_rls1), color = "red") +
+  geom_line(aes(x = x, 
+                y = fitted_bayes1), color = "navyblue") +
+  theme_minimal() + labs(title = "Ridge vs Bayesian regression", caption = "Fitted values of our Ridge regression and Bayesian regression model trained on 20 observations") + theme(plot.caption = element_text(hjust = 0.5))
+
+ggplot(data = df1_test) +
+  geom_jitter(aes(x = x, y = target)) +
+  geom_line(aes(x = x, 
+                y = fitted_rls5), color = "red") +
+  geom_line(aes(x = x, 
+                y = fitted_bayes5), color = "navyblue") +
+  theme_minimal() + labs(title = "Ridge vs Bayesian regression", caption = "Fitted values of our Ridge regression and Bayesian regression model trained on 100 observations") + theme(plot.caption = element_text(hjust = 0.5))
+```
+
+We can see that the Bayesian regression started off worse but as the sample size became larger the quality of fit caught up. This is probably due to the lambda being chosen as optimal (or nearly optimal, as we have not done an exhaustive search). Now we look at the RMSE of both regressions in all cases.
+
+```{r}
+# table comparison
+rmse_bayes <- vector()
+for (i in 1:5){
+  rmse_bayes[i] <- sqrt(sum((fitted_bayes[, i] - target)^2 / length(target)))
+}
+
+rmse_rls <- vector()
+for (i in 1:5){
+  rmse_rls[i] <- sqrt(sum((fitted_rls[, i] - target)^2 / length(target)))
+}
+
+comp <- data.frame(rmse_bayes, rmse_rls, row.names = c("20 observations", 
+                                                             "40 observations", "60 observations",
+                                                             "80 observations", "100 observations"))
+names(comp) <- c("Bayes RMSE", "Ridge RMSE")
+```
+
+```{r}
+print(comp)
+```
+
+I would like to end this exercise by discussing the findings a bit deeper. From the graphs in this and the two previous exercises I can conclude that the fit gets better with growing number of observations, as expected. This is also confirmed by the table of the RMSE for both models. Unsurprisingly both models yield nearly identical results in the case of more observations -- this was expected as the No Free Lunch Theorem suggests this result. 
+
+In the beginning though the Ridge regression outperformed the Bayesian regression. This is most likely due to the lambda being determined (nearly) optimally by the glmnet package.
+
+# Exercise 5
+
+_Redo item 3 but this time estimate $\beta$ and $\alpha$ from the data. Read Section 3.5.2 (page 168-170) to get the formulae for estimating these two parameters. (2 points)_
+
+## Bayesian regression -- vol.2
+
+This time we run the BLR properly, i.e. with estimating both alpha and beta.
+
+```{r}
+# properly estimated bayesian regression (unlike in #3 we estimate also alpha, beta)
+BLR_posterior <- function(phi, target, beta, m_N_old, S_N_old){
+  # the prior knowledge
+  m_0 <- m_N_old
+  S_0 <- S_N_old
+  # updating the prior knowledge
+  S_N <- solve(solve(S_0) + beta * t(phi) %*% phi)
+  m_N <- S_N %*% (solve(S_0) %*% m_0 + beta * t(phi) %*% target)
+  
+  return(list(m_N, S_N))
+}
+
+
+BLR_optim <- function(phi, t, max_iter = 1000, 
+                        d_alpha_min = 0.01, 
+                        d_beta_min = 0.01){
+  alpha <- 0.5
+  beta <- 5
+  m_N <- as.matrix(rep(0, 10))
+  S_N <- alpha * diag(1, 10)
+  iteration <- 1 
+  d_alpha <- 5
+  d_beta <- 5
+  
+  # this loop determines the optimal values of alpha and beta
+  while ((iteration < max_iter) & ((abs(d_alpha) > d_alpha_min) | (abs(d_beta) > d_beta_min))) {
+    lambdas <- eigen(beta * t(phi) %*% phi)$values
+    gamma <- 0
+    for (lambda in lambdas) {
+      gamma <- gamma + (lambda / (alpha + lambda)) 
+    }
+    
+    updated_mN_SN <- BLR_posterior(phi = phi, 
+                           target = t, 
+                           beta = beta, 
+                           m_N_old = m_N, 
+                           S_N_old = S_N)
+    m_N <- updated_mN_SN[[1]]
+    S_N <- updated_mN_SN[[2]]
+    SSR <- 0
+    for (i in 1:nrow(phi)) {
+      SSR <- SSR + (t[i] - (t(m_N) %*% phi[i, ]))^2
+    }
+    
+    d_alpha <- (gamma / (t(m_N) %*% m_N)) - alpha
+    alpha <- as.numeric(alpha + d_alpha)
+    
+    d_beta <- (1 / ((1 / (nrow(phi) - gamma)) * SSR)) - beta
+    beta <- as.numeric(beta + d_beta)
+    iteration <- iteration + 1
+  }
+  
+  # now we estimate the BLR with the optimal values of alpha and beta
+  m_0 <- as.matrix(rep(0, 10))
+  S_0 <- alpha * diag(1, 10)
+  S_N <- solve(solve(S_0) + beta * t(phi) %*% phi)
+  m_N <- S_N %*% (solve(S_0) %*% m_0 + beta * t(phi) %*% t)
+  
+  print(paste("The number of iterations is", iteration, sep = " "))
+  print(paste("The optimal value of hyperparameter alpha is", alpha, sep = " "))
+  print(paste("The optimal value of hyperparameter beta is", beta, sep = " "))
+  return(m_N)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+BLR1 <- BLR_optim(df[1:20, ], df1$target[1:20])
+fitted_BLR1 <- df_test %*% as.matrix(BLR1)
+BLR2 <- BLR_optim(df[1:40, ], df1$target[1:40])
+fitted_BLR2 <- df_test %*% as.matrix(BLR2)
+BLR3 <- BLR_optim(df[1:60, ], df1$target[1:60])
+fitted_BLR3 <- df_test %*% as.matrix(BLR3)
+BLR4 <- BLR_optim(df[1:80, ], df1$target[1:80])
+fitted_BLR4 <- df_test %*% as.matrix(BLR4)
+BLR5 <- BLR_optim(df, df1$target)
+fitted_BLR5 <- df_test %*% as.matrix(BLR5)
+
+fitted_BLR <- cbind(fitted_BLR1, fitted_BLR2, fitted_BLR3,
+                      fitted_BLR4, fitted_BLR5)
+```
+
+We get the table of the appropriate estimates of the weights for all five cases.
+
+```{r}
+coef_BLR <- cbind(BLR1, BLR2, BLR3, BLR4, BLR5)
+colnames(coef_BLR) <- c("20 obs", "40 obs", "60 obs", "80 obs", "100 obs")
+print(coef_BLR)
+```
+
+# Exercise 6
+
+_In practice, we want to know which among competing models is the best. Discuss ways how we can compare the models from regularized least squares and bayesian regression. (1 point)_
+
+## Comparison -- vol. 2
+I will start this exercise by recreating the Exercise 4 with the new BLR model and then I will say something about the model comparison in general.
+
+### Exercise "4b"
+Now we recreate the graph from Exercise 4 and add the BLR with optimal $\alpha$ and $\beta$.
+
+```{r echo = FALSE}
+ggplot(data = df1_test) +
+  geom_jitter(aes(x = x, y = target)) +
+  geom_line(aes(x = x, 
+                y = fitted_rls1), color = "red") +
+  geom_line(aes(x = x, 
+                y = fitted_bayes1), color = "navyblue") +
+  geom_line(aes(x = x, 
+                y = fitted_BLR1), color = "indianred") +
+  theme_minimal() + labs(title = "Ridge vs (optimal) Bayesian regression", caption = "Fitted values of our Ridge regression and (optimal) Bayesian regression model trained on 20 observations") + theme(plot.caption = element_text(hjust = 0.5))
+
+ggplot(data = df1_test) +
+  geom_jitter(aes(x = x, y = target)) +
+  geom_line(aes(x = x, 
+                y = fitted_rls5), color = "red") +
+  geom_line(aes(x = x, 
+                y = fitted_bayes5), color = "navyblue") +
+  geom_line(aes(x = x, 
+                y = fitted_BLR5), color = "indianred") +
+  theme_minimal() + labs(title = "Ridge vs (optimal) Bayesian regression", caption = "Fitted values of our Ridge regression and (optimal) Bayesian regression model trained on 100 observations") + theme(plot.caption = element_text(hjust = 0.5))
+```
+
+We can see that in case of 20 observations the optimal BLR is better than the Bayesian regression from Exercise 3 but in case of 100 observations they are nearly identical. The Ridge regression is in all cases nearly unrecognizable from the optimal Bayes regression.
+
+```{r}
+rmse_BLR <- vector()
+for (i in 1:5){
+  rmse_BLR[i] <- sqrt(sum((fitted_BLR[, i] - target)^2 / length(target)))
+}
+
+comp1 <- data.frame(rmse_BLR, rmse_rls, row.names = c("20 observations", 
+                                                       "40 observations", "60 observations",
+                                                       "80 observations", "100 observations"))
+names(comp1) <- c("BLR RMSE", "Ridge RMSE")
+```
+
+
+```{r}
+print(comp1)
+
+```
+
+I have shown here why I have chosen the (nearly) optimal lambda in the case of Ridge regression - the results from Maximum Evidence Bayesian regression are nearly identical to the Ridge regression results and in the case of very few observations outperform the ordinary Bayesian regression.
+
+### Model comparison in general
+Classification and regression models have different type of metrics due to different type of modelled variable, i.e. discrete versus continous variable. (Other model types and their specific metrics are omitted, e.g. survival analysis.)
+
+Some classification performance metrics are accuracy, ROC (binary only), false negatives (and equivalents) and F-score.
+
+For regression tasks one of the default measures is the (root) mean squared error and some other common metrics are mean absolute error, mean percentage error and explained variance.
+
+These metrics can be used to compare models but in case of the model being estimated by optimizing the likelihood functions we can also use the explained deviance measure (which is a sort of equivalent to the explained variance measure and is used by the glmnet function to determine the optimal lambda) and AIC or BIC. The AIC and BIC are used to penalize the model complexity and avoid overfitting.
+
+In the case  at hand, comparison of the Bayesian and Ridge regression, the standard regression performance metrics can be used as well as the measures based on likelihood. These models can be estimated by finding the global optimum of their (possibly constrained) log-likelihood function and in that case the likelihood-based criteria can be used. It cannot be done in my assignment as I have not determined the weights by optimizing the likelihood and used analytical solutions instead, thus I do not have the log-likelihood function used to calculate the criteria mentioned above. I would have to re-estimate the models using this criteria or use some existing packages with the implementation (such as the glmnet package).
+
